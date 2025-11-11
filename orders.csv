@@ -1,0 +1,3 @@
+Action,Quantity,Symbol,SecType,Exchange,Currency,TimeInForce,GoodTilDate,GoodAfterTime,OrderType,LmtPrice,AuxPrice,OcaGroup,OrderId,ParentOrderId,BasketTag,Account
+BUY,1,AAPL,STK,SMART/AMEX,USD,DAY,,,MKT,,,,2,,eq_leg_SOXL,DU1234567
+SELL,1,IEF,STK,SMART/AMEX,USD,DAY,,,MKT,,,,,,ief_sink,DU1234567

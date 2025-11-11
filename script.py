@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-SnapTrade to IBKR TWS Bridge
-============================
-Fetches open orders from SnapTrade and places them in IBKR TWS using ib_insync.
+SnapTrade CSV to IBKR Bridge
+=============================
+Reads orders from CSV and places them in IBKR via SnapTrade API.
+NO TWS/GATEWAY REQUIRED - Uses SnapTrade API directly.
 
 Requirements:
-    pip install snaptrade-python-sdk python-dotenv ib_insync
+    pip install snaptrade-python-sdk python-dotenv
 
 Setup:
-    1. Create a .env file with your credentials
-    2. Ensure IBKR TWS or Gateway is running
-    3. Connect your brokerage to SnapTrade (see instructions below)
+    1. Create a .env file with your credentials (or use defaults in script)
+    2. Ensure your IBKR account is connected to SnapTrade
+    3. Create orders.csv with your orders
     4. Run this script
-
-Author: SnapTrade Integration Team
 """
 
+import csv
 import os
 import sys
+import time
 from typing import List, Dict, Optional
 from datetime import datetime
+from pathlib import Path
 from pprint import pprint
 
 # Load environment variables
@@ -33,37 +35,24 @@ try:
 except ImportError as e:
     print("❌ ERROR: SnapTrade SDK not installed!")
     print("\nPlease install it with:")
-    print("    pip install snaptrade-python-sdk")
-    print("\nFull installation command:")
-    print("    pip install snaptrade-python-sdk python-dotenv ib_insync")
-    sys.exit(1)
-
-# Import IBKR ib_insync
-try:
-    from ib_insync import IB, Stock, Order, MarketOrder, LimitOrder
-except ImportError as e:
-    print("❌ ERROR: ib_insync not installed!")
-    print("\nPlease install it with:")
-    print("    pip install ib_insync")
+    print("    pip install snaptrade-python-sdk python-dotenv")
     sys.exit(1)
 
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
 
-# SnapTrade Configuration (loaded from .env)
-SNAPTRADE_CLIENT_ID = os.getenv("SNAPTRADE_CLIENT_ID")
-SNAPTRADE_CONSUMER_KEY = os.getenv("SNAPTRADE_CONSUMER_KEY")
-SNAPTRADE_USER_ID = os.getenv("SNAPTRADE_USER_ID")
-SNAPTRADE_USER_SECRET = os.getenv("SNAPTRADE_USER_SECRET")
+# SnapTrade API Credentials (with defaults from your account)
+SNAPTRADE_CLIENT_ID = os.getenv("SNAPTRADE_CLIENT_ID", "EVIEW-TECHNOLOGIES-TEST-UVEVH")
+SNAPTRADE_CONSUMER_KEY = os.getenv("SNAPTRADE_CONSUMER_KEY", "jqRizEpeIjBBibDkw6X7rZ0JjIjXt9XwnOmj7ay50gczEbfO5N")
+SNAPTRADE_USER_ID = os.getenv("SNAPTRADE_USER_ID", "user_test_2")
+SNAPTRADE_USER_SECRET = os.getenv("SNAPTRADE_USER_SECRET", "f1df792c-8338-4a4b-9e6c-4139e455dd79")
 
-# IBKR TWS Configuration
-IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
-IBKR_PORT = int(os.getenv("IBKR_PORT", "7497"))  # 7497 for TWS Paper, 7496 for TWS Live
-IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
+# File Paths
+CSV_INPUT_FILE = os.getenv("CSV_INPUT_FILE", "orders.csv")
 
 # Options
-DRY_RUN = os.getenv("DRY_RUN", "True").lower() == "true"  # Set to False to place real orders
+DRY_RUN = os.getenv("DRY_RUN", "True").lower() == "true"
 VERBOSE = os.getenv("VERBOSE", "True").lower() == "true"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -107,6 +96,71 @@ def validate_credentials():
     return True
 
 # ═══════════════════════════════════════════════════════════════════
+# CSV READER
+# ═══════════════════════════════════════════════════════════════════
+
+def read_orders_from_csv(filepath: str) -> List[Dict]:
+    """
+    Read orders from CSV file.
+    Expected columns: Action, Quantity, Symbol, SecType, Exchange, Currency, 
+                     TimeInForce, OrderType, LmtPrice, AuxPrice, Account
+    """
+    print_section(f"Reading Orders from CSV: {filepath}")
+    
+    csv_path = Path(filepath)
+    if not csv_path.exists():
+        print(f"❌ CSV file not found: {filepath}")
+        print(f"\nCreate a CSV file with columns:")
+        print(f"  Action,Quantity,Symbol,SecType,Exchange,Currency,TimeInForce,OrderType,LmtPrice,AuxPrice,Account")
+        return []
+    
+    orders = []
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            
+            for row_num, row in enumerate(reader, start=2):
+                try:
+                    # Parse order data
+                    order = {
+                        'action': row['Action'].strip().upper(),
+                        'quantity': float(row['Quantity'].strip()),
+                        'symbol': row['Symbol'].strip().upper(),
+                        'sec_type': row.get('SecType', 'STK').strip().upper(),
+                        'exchange': row.get('Exchange', 'SMART').strip().upper().split('/')[0],
+                        'currency': row.get('Currency', 'USD').strip().upper(),
+                        'time_in_force': row.get('TimeInForce', 'DAY').strip().upper(),
+                        'order_type': row.get('OrderType', 'MKT').strip().upper(),
+                        'lmt_price': float(row['LmtPrice'].strip()) if row.get('LmtPrice', '').strip() else None,
+                        'aux_price': float(row['AuxPrice'].strip()) if row.get('AuxPrice', '').strip() else None,
+                        'account': row.get('Account', '').strip(),
+                        'row_number': row_num
+                    }
+                    
+                    # Validate required fields
+                    if not order['symbol'] or order['quantity'] <= 0:
+                        print(f"   ⚠️  Row {row_num}: Invalid data, skipping")
+                        continue
+                    
+                    if order['action'] not in ['BUY', 'SELL']:
+                        print(f"   ⚠️  Row {row_num}: Invalid action '{order['action']}', skipping")
+                        continue
+                    
+                    orders.append(order)
+                    print(f"   ✅ Row {row_num}: {order['action']} {order['quantity']} {order['symbol']}")
+                    
+                except (ValueError, KeyError) as e:
+                    print(f"   ⚠️  Row {row_num}: Error parsing - {str(e)}")
+                    continue
+        
+        print(f"\n✅ Loaded {len(orders)} valid order(s) from CSV")
+        return orders
+        
+    except Exception as e:
+        print(f"❌ Error reading CSV: {str(e)}")
+        return []
+
+# ═══════════════════════════════════════════════════════════════════
 # SNAPTRADE CLIENT
 # ═══════════════════════════════════════════════════════════════════
 
@@ -138,12 +192,7 @@ class SnapTradeManager:
             return False
     
     def get_user_accounts(self) -> List[Dict]:
-        """
-        Fetch all linked brokerage accounts for the user.
-        
-        Returns:
-            List of account dictionaries
-        """
+        """Fetch all linked brokerage accounts for the user."""
         print_section("Fetching User Accounts")
         try:
             response = self.client.account_information.list_user_accounts(
@@ -183,179 +232,130 @@ class SnapTradeManager:
             print(f"❌ Error fetching accounts: {str(e)}")
             return []
     
-    def get_account_orders(self, account_id: str) -> List[Dict]:
-        """
-        Fetch all orders for a specific account.
-        Note: SnapTrade SDK doesn't have a dedicated get_orders method.
-        Orders are included when you get account details.
-        
-        Args:
-            account_id: The SnapTrade account ID
-            
-        Returns:
-            List of order dictionaries
-        """
-        print_section(f"Fetching Orders for Account: {account_id}")
+    def search_symbol(self, symbol: str, account_id: str) -> Optional[str]:
+        """Search for a symbol and return its universal_symbol_id."""
         try:
-            # Get all account details including orders
-            response = self.client.account_information.get_user_account_details(
-                account_id=account_id,
+            # Use symbol search endpoint (works on FREE plan)
+            response = self.client.reference_data.symbol_search_user_account(
                 user_id=self.user_id,
-                user_secret=self.user_secret
+                user_secret=self.user_secret,
+                account_id=account_id,
+                substring=symbol
             )
             
-            account_data = response.body if response.body else {}
-            orders = account_data.get('account_orders', [])
-            
-            if not orders:
-                print("   ℹ️  No orders found for this account")
-                print("\n   💡 To test: Place some orders in your IBKR account,")
-                print("      then run this script again to sync them.")
-                return []
-            
-            print(f"✅ Found {len(orders)} order(s):")
-            for idx, order in enumerate(orders, 1):
-                symbol = order.get('symbol', {})
-                print(f"\n   Order {idx}:")
-                print(f"      ID: {order.get('id', 'N/A')}")
-                print(f"      Symbol: {symbol.get('symbol', 'N/A')}")
-                print(f"      Action: {order.get('action', 'N/A')}")
-                print(f"      Type: {order.get('order_type', 'N/A')}")
-                print(f"      Quantity: {order.get('total_quantity', 'N/A')}")
-                print(f"      Status: {order.get('status', 'N/A')}")
-                if order.get('limit_price'):
-                    print(f"      Limit Price: ${order.get('limit_price')}")
-            
-            return orders
-            
-        except ApiException as e:
-            print(f"❌ API Error fetching orders: {e}")
-            if hasattr(e, 'body'):
-                pprint(e.body)
-            return []
-        except Exception as e:
-            print(f"❌ Error fetching orders: {str(e)}")
-            return []
-
-# ═══════════════════════════════════════════════════════════════════
-# IBKR CLIENT
-# ═══════════════════════════════════════════════════════════════════
-
-class IBKRManager:
-    """Manages IBKR TWS interactions via ib_insync."""
-    
-    def __init__(self):
-        """Initialize IBKR connection."""
-        self.ib = IB()
-        self.connected = False
-    
-    def connect(self) -> bool:
-        """Connect to IBKR TWS/Gateway."""
-        print_section("Connecting to IBKR TWS")
-        try:
-            self.ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID)
-            self.connected = True
-            print(f"✅ Connected to IBKR at {IBKR_HOST}:{IBKR_PORT}")
-            return True
-        except Exception as e:
-            print(f"❌ Failed to connect to IBKR: {str(e)}")
-            print("\n📝 Troubleshooting:")
-            print("   1. Ensure IBKR TWS or Gateway is running")
-            print("   2. Check that API connections are enabled in TWS:")
-            print("      File > Global Configuration > API > Settings")
-            print("      ✓ Enable ActiveX and Socket Clients")
-            print("   3. Verify the port number:")
-            print("      - Paper Trading: 7497")
-            print("      - Live Trading: 7496")
-            print(f"   4. Current settings: {IBKR_HOST}:{IBKR_PORT}")
-            return False
-    
-    def disconnect(self):
-        """Disconnect from IBKR."""
-        if self.connected:
-            self.ib.disconnect()
-            print("   Disconnected from IBKR")
-    
-    def convert_snaptrade_order_to_ibkr(self, snaptrade_order: Dict) -> Optional[tuple]:
-        """
-        Convert a SnapTrade order to IBKR format.
-        
-        Args:
-            snaptrade_order: Order dict from SnapTrade
-            
-        Returns:
-            Tuple of (Contract, Order) or None if conversion fails
-        """
-        try:
-            # Extract order details
-            symbol_data = snaptrade_order.get('symbol', {})
-            symbol = symbol_data.get('symbol', '')
-            action = snaptrade_order.get('action', 'BUY').upper()
-            quantity = float(snaptrade_order.get('total_quantity', 0))
-            order_type = snaptrade_order.get('order_type', 'Market')
-            limit_price = snaptrade_order.get('limit_price')
-            
-            if not symbol or quantity <= 0:
-                print(f"   ⚠️  Invalid order data: {symbol} qty={quantity}")
-                return None
-            
-            # Create IBKR Contract (Stock)
-            contract = Stock(symbol, 'SMART', 'USD')
-            
-            # Create IBKR Order
-            if order_type.upper() == 'MARKET':
-                order = MarketOrder(action, quantity)
-            elif order_type.upper() == 'LIMIT':
-                if not limit_price:
-                    print(f"   ⚠️  Limit order missing price")
+            if response.body and len(response.body) > 0:
+                # Find exact match or first result
+                for sym in response.body:
+                    symbol_name = sym.get('symbol', '').upper()
+                    if symbol_name == symbol.upper():
+                        symbol_id = sym.get('id')
+                        if symbol_id:
+                            if VERBOSE:
+                                print(f"      Symbol {symbol} → ID: {symbol_id}")
+                            return symbol_id
+                
+                # Use first result if no exact match
+                symbol_id = response.body[0].get('id')
+                if symbol_id:
+                    if VERBOSE:
+                        print(f"      Symbol {symbol} → ID: {symbol_id} (first match)")
+                    return symbol_id
+                else:
+                    print(f"      ⚠️  Symbol ID not found for: {symbol}")
                     return None
-                order = LimitOrder(action, quantity, limit_price)
             else:
-                print(f"   ⚠️  Unsupported order type: {order_type}")
+                print(f"      ⚠️  Symbol not found: {symbol}")
                 return None
-            
-            # Set additional parameters
-            order.outsideRth = True  # Allow outside regular trading hours
-            
-            return (contract, order)
-            
+                
         except Exception as e:
-            print(f"   ❌ Error converting order: {str(e)}")
+            print(f"      ❌ Error searching symbol {symbol}: {str(e)}")
             return None
     
-    def place_order(self, contract, order) -> bool:
-        """
-        Place an order in IBKR.
-        
-        Args:
-            contract: IBKR Contract object
-            order: IBKR Order object
-            
-        Returns:
-            True if successful, False otherwise
-        """
+    def place_order_from_csv(self, account_id: str, csv_order: Dict) -> bool:
+        """Place an order from CSV data using SnapTrade API."""
         try:
+            symbol = csv_order['symbol']
+            action = csv_order['action']
+            quantity = csv_order['quantity']
+            order_type = csv_order['order_type']
+            lmt_price = csv_order.get('lmt_price')
+            tif = csv_order.get('time_in_force', 'Day')
+            
+            print(f"      Searching for symbol: {symbol}")
+            
+            # Search for symbol to get universal_symbol_id
+            symbol_id = self.search_symbol(symbol, account_id)
+            if not symbol_id:
+                return False
+            
+            # Map order type
+            order_type_map = {
+                'MKT': 'Market',
+                'LMT': 'Limit',
+                'STP': 'Stop',
+                'MARKET': 'Market',
+                'LIMIT': 'Limit',
+                'STOP': 'Stop'
+            }
+            snaptrade_order_type = order_type_map.get(order_type, 'Market')
+            
+            # Map time in force
+            tif_map = {
+                'DAY': 'Day',
+                'GTC': 'GTC',
+                'IOC': 'IOC',
+                'FOK': 'FOK'
+            }
+            snaptrade_tif = tif_map.get(tif, 'Day')
+            
             if DRY_RUN:
-                print(f"   🔵 [DRY RUN] Would place order:")
-                print(f"      {order.action} {order.totalQuantity} {contract.symbol}")
-                print(f"      Type: {order.orderType}")
-                if hasattr(order, 'lmtPrice'):
-                    print(f"      Limit Price: ${order.lmtPrice}")
+                print(f"      🔵 [DRY RUN] Would place order via SnapTrade:")
+                print(f"         {action} {quantity} {symbol}")
+                print(f"         Type: {snaptrade_order_type} | TIF: {snaptrade_tif}")
+                if lmt_price:
+                    print(f"         Limit Price: ${lmt_price}")
                 return True
             
-            # Place actual order
-            trade = self.ib.placeOrder(contract, order)
-            print(f"   ✅ Order placed:")
-            print(f"      {order.action} {order.totalQuantity} {contract.symbol}")
-            print(f"      Order ID: {trade.order.orderId}")
+            # Prepare order payload for SnapTrade
+            order_data = {
+                'account_id': account_id,
+                'action': action.capitalize(),  # Buy or Sell
+                'order_type': snaptrade_order_type,
+                'time_in_force': snaptrade_tif,
+                'universal_symbol_id': symbol_id,
+                'units': int(quantity)
+            }
             
-            # Wait a moment for order to be acknowledged
-            self.ib.sleep(1)
+            # Add price if limit order
+            if snaptrade_order_type == 'Limit' and lmt_price:
+                order_data['price'] = float(lmt_price)
             
-            return True
+            print(f"      📤 Placing order via SnapTrade...")
             
+            # Place order through SnapTrade
+            response = self.client.trading.place_force_order(
+                user_id=self.user_id,
+                user_secret=self.user_secret,
+                **order_data
+            )
+            
+            if response.body:
+                order_result = response.body
+                print(f"      ✅ Order placed successfully!")
+                print(f"         Order ID: {order_result.get('id', 'N/A')}")
+                print(f"         Status: {order_result.get('status', 'N/A')}")
+                return True
+            else:
+                print(f"      ❌ Order placement failed")
+                return False
+                
+        except ApiException as e:
+            print(f"      ❌ API Error: {e}")
+            if hasattr(e, 'body'):
+                pprint(e.body)
+            return False
         except Exception as e:
-            print(f"   ❌ Failed to place order: {str(e)}")
+            print(f"      ❌ Error placing order: {str(e)}")
             return False
 
 # ═══════════════════════════════════════════════════════════════════
@@ -364,9 +364,11 @@ class IBKRManager:
 
 def main():
     """Main execution flow."""
-    print_header("SnapTrade to IBKR Bridge")
+    print_header("CSV to IBKR via SnapTrade API")
     print(f"Mode: {'DRY RUN (No actual orders)' if DRY_RUN else 'LIVE TRADING'}")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\n💡 Orders will be placed through SnapTrade API")
+    print("   No need to run TWS/Gateway!")
     
     # Step 1: Validate credentials
     if not validate_credentials():
@@ -384,63 +386,44 @@ def main():
     if not accounts:
         return 1
     
-    # Step 4: Get orders from first account
     account_id = accounts[0]['id']
-    orders = snaptrade.get_account_orders(account_id)
+    account_name = accounts[0].get('name', 'N/A')
+    print(f"\n   Using account: {account_name}")
+    
+    # Step 4: Read orders from CSV
+    orders = read_orders_from_csv(CSV_INPUT_FILE)
     
     if not orders:
-        print("\n✅ No orders to process")
-        return 0
-    
-    # Filter for open orders only
-    open_orders = [o for o in orders if o.get('status', '').upper() in ['OPEN', 'PENDING', 'SUBMITTED']]
-    
-    if not open_orders:
-        print(f"\n   Found {len(orders)} total order(s), but none are open")
-        return 0
-    
-    print(f"\n   Found {len(open_orders)} open order(s) to process")
-    
-    # Step 5: Connect to IBKR
-    print_header("Connecting to IBKR")
-    ibkr = IBKRManager()
-    
-    if not ibkr.connect():
+        print("\n❌ No valid orders found in CSV file")
         return 1
     
-    try:
-        # Step 6: Process each order
-        print_header("Processing Orders")
-        successful = 0
-        failed = 0
+    # Step 5: Process each order through SnapTrade
+    print_header("Processing Orders via SnapTrade API")
+    successful = 0
+    failed = 0
+    
+    for idx, csv_order in enumerate(orders, 1):
+        print(f"\n[{idx}/{len(orders)}] Processing order from row {csv_order['row_number']}:")
+        print(f"   {csv_order['action']} {csv_order['quantity']} {csv_order['symbol']}")
+        print(f"   Type: {csv_order['order_type']} | TIF: {csv_order['time_in_force']}")
         
-        for idx, snaptrade_order in enumerate(open_orders, 1):
-            print(f"\n[{idx}/{len(open_orders)}] Processing order:")
-            
-            # Convert SnapTrade order to IBKR format
-            result = ibkr.convert_snaptrade_order_to_ibkr(snaptrade_order)
-            if not result:
-                failed += 1
-                continue
-            
-            contract, order = result
-            
-            # Place order in IBKR
-            if ibkr.place_order(contract, order):
-                successful += 1
-            else:
-                failed += 1
+        # Place order via SnapTrade
+        if snaptrade.place_order_from_csv(account_id, csv_order):
+            successful += 1
+        else:
+            failed += 1
         
-        # Step 7: Summary
-        print_header("Summary")
-        print(f"Total orders processed: {len(open_orders)}")
-        print(f"✅ Successful: {successful}")
-        print(f"❌ Failed: {failed}")
-        print(f"Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
-        
-    finally:
-        # Always disconnect from IBKR
-        ibkr.disconnect()
+        # Small delay between orders
+        if idx < len(orders):
+            time.sleep(1)
+    
+    # Step 6: Summary
+    print_header("Summary")
+    print(f"Total orders processed: {len(orders)}")
+    print(f"✅ Successful: {successful}")
+    print(f"❌ Failed: {failed}")
+    print(f"Mode: {'DRY RUN' if DRY_RUN else 'LIVE TRADING'}")
+    print(f"\n💡 Orders placed via SnapTrade API → Your connected IBKR account")
     
     return 0
 
