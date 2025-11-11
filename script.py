@@ -319,7 +319,7 @@ class SnapTradeManager:
             # Prepare order payload for SnapTrade
             order_data = {
                 'account_id': account_id,
-                'action': action.capitalize(),  # Buy or Sell
+                'action': action.upper(),  # BUY or SELL (ALL CAPS)
                 'order_type': snaptrade_order_type,
                 'time_in_force': snaptrade_tif,
                 'universal_symbol_id': symbol_id,
