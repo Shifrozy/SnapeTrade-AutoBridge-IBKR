@@ -55,7 +55,7 @@ Before you begin, ensure you have:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/SnapeTrade-AutoBridge-IBKR.git
+git clone https://github.com/Shifrozy/SnapeTrade-AutoBridge-IBKR.git
 cd SnapeTrade-AutoBridge-IBKR
 ```
 
@@ -433,7 +433,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ```bash
 # Clone repo
-git clone https://github.com/yourusername/SnapeTrade-AutoBridge-IBKR.git
+git clone https://github.com/Shifrozy/SnapeTrade-AutoBridge-IBKR.git
 
 # Create virtual environment
 python -m venv venv
