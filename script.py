@@ -186,6 +186,8 @@ class SnapTradeManager:
     def get_account_orders(self, account_id: str) -> List[Dict]:
         """
         Fetch all orders for a specific account.
+        Note: SnapTrade SDK doesn't have a dedicated get_orders method.
+        Orders are included when you get account details.
         
         Args:
             account_id: The SnapTrade account ID
@@ -195,17 +197,20 @@ class SnapTradeManager:
         """
         print_section(f"Fetching Orders for Account: {account_id}")
         try:
-            response = self.client.trading.get_account_orders(
+            # Get all account details including orders
+            response = self.client.account_information.get_user_account_details(
                 account_id=account_id,
                 user_id=self.user_id,
-                user_secret=self.user_secret,
-                state="all"  # Can be: all, open, executed, canceled
+                user_secret=self.user_secret
             )
             
-            orders = response.body if response.body else []
+            account_data = response.body if response.body else {}
+            orders = account_data.get('account_orders', [])
             
             if not orders:
-                print("   No orders found for this account")
+                print("   ℹ️  No orders found for this account")
+                print("\n   💡 To test: Place some orders in your IBKR account,")
+                print("      then run this script again to sync them.")
                 return []
             
             print(f"✅ Found {len(orders)} order(s):")
